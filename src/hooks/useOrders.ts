@@ -1,0 +1,226 @@
+import { useState, useCallback } from 'react';
+import { supabase } from '@/lib/supabase';
+import type { OrderWithPartner, OrderItem, MaterialLine } from '@/types';
+
+export function useOrders() {
+  const [orders, setOrders] = useState<OrderWithPartner[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchOrders = useCallback(async (filters?: {
+    dateFrom?: string;
+    dateTo?: string;
+    status?: string;
+  }) => {
+    setLoading(true);
+    let query = supabase
+      .from('v_orders_with_partner')
+      .select('*')
+      .order('order_date', { ascending: false });
+
+    if (filters?.dateFrom) query = query.gte('order_date', filters.dateFrom);
+    if (filters?.dateTo) query = query.lte('order_date', filters.dateTo);
+    if (filters?.status) query = query.eq('status', filters.status);
+
+    const { data, error } = await query;
+    if (!error && data) setOrders(data);
+    setLoading(false);
+    return { data, error };
+  }, []);
+
+  const fetchOrderItems = useCallback(async (orderId: number) => {
+    const { data, error } = await supabase
+      .from('order_items')
+      .select('*')
+      .eq('order_id', orderId)
+      .is('deleted_at', null)
+      .order('seq', { ascending: true });
+
+    return { data: data as OrderItem[] | null, error };
+  }, []);
+
+  const createOrder = useCallback(async (
+    orderData: { doc_no: string; order_date: string; partner_id: number; contact_person?: string | null; vessel?: string | null; created_by: number },
+    items: MaterialLine[],
+  ) => {
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .insert({
+        doc_no: orderData.doc_no,
+        order_date: orderData.order_date,
+        partner_id: orderData.partner_id,
+        contact_person: orderData.contact_person ?? null,
+        vessel: orderData.vessel ?? null,
+        status: 'draft',
+        created_by: orderData.created_by,
+      })
+      .select()
+      .single();
+
+    if (orderErr || !order) return { data: null, error: orderErr };
+
+    const itemRows = items.map((item, i) => ({
+      order_id: order.id,
+      seq: i + 1,
+      name: item.name,
+      spec: item.spec || null,
+      qty: item.qty,
+      unit: item.unit,
+      price: item.price,
+      remark: item.remark || null,
+    }));
+
+    const { error: itemErr } = await supabase
+      .from('order_items')
+      .insert(itemRows);
+
+    if (itemErr) return { data: null, error: itemErr };
+
+    return { data: order, error: null };
+  }, []);
+
+  const confirmOrder = useCallback(async (orderId: number) => {
+    const { data, error } = await supabase
+      .from('orders')
+      .update({ status: 'confirmed', delivery_status: 'pending' })
+      .eq('id', orderId)
+      .select()
+      .single();
+
+    if (!error) {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId ? { ...o, status: 'confirmed' as const, delivery_status: 'pending' as const } : o
+      ));
+    }
+    return { data, error };
+  }, []);
+
+  const confirmOrderWithItems = useCallback(async (
+    originOrderId: number,
+    selectedItems: OrderItem[],
+    orderData: { doc_no: string; order_date: string; partner_id: number; contact_person?: string | null; vessel?: string | null; created_by: number },
+  ) => {
+    const { data: newOrder, error: orderErr } = await supabase
+      .from('orders')
+      .insert({
+        doc_no: orderData.doc_no,
+        order_date: orderData.order_date,
+        partner_id: orderData.partner_id,
+        contact_person: orderData.contact_person ?? null,
+        vessel: orderData.vessel ?? null,
+        status: 'confirmed',
+        delivery_status: 'pending',
+        origin_order_id: originOrderId,
+        created_by: orderData.created_by,
+      })
+      .select()
+      .single();
+
+    if (orderErr || !newOrder) return { data: null, error: orderErr };
+
+    const itemRows = selectedItems.map((item, i) => ({
+      order_id: newOrder.id,
+      seq: i + 1,
+      name: item.name,
+      spec: item.spec || null,
+      qty: item.qty,
+      unit: item.unit,
+      price: item.price,
+      remark: item.remark || null,
+    }));
+
+    const { error: itemErr } = await supabase
+      .from('order_items')
+      .insert(itemRows);
+
+    if (itemErr) return { data: null, error: itemErr };
+
+    return { data: newOrder, error: null };
+  }, []);
+
+  const updateOrder = useCallback(async (
+    orderId: number,
+    orderData: { doc_no: string; order_date: string; partner_id: number; contact_person?: string | null; vessel?: string | null },
+    items: MaterialLine[],
+  ) => {
+    const { error: updateErr } = await supabase
+      .from('orders')
+      .update({
+        doc_no: orderData.doc_no,
+        order_date: orderData.order_date,
+        partner_id: orderData.partner_id,
+        contact_person: orderData.contact_person ?? null,
+        vessel: orderData.vessel ?? null,
+      })
+      .eq('id', orderId);
+
+    if (updateErr) return { error: updateErr };
+
+    const { data: existing } = await supabase
+      .from('order_items')
+      .select('id, seq')
+      .eq('order_id', orderId)
+      .order('seq', { ascending: true });
+
+    const existingItems = existing || [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const row = {
+        name: item.name,
+        spec: item.spec || null,
+        qty: item.qty,
+        unit: item.unit,
+        price: item.price,
+        remark: item.remark || null,
+      };
+
+      if (i < existingItems.length) {
+        await supabase.from('order_items').update({ ...row, seq: i + 1 }).eq('id', existingItems[i].id);
+      } else {
+        await supabase.from('order_items').insert({ ...row, order_id: orderId, seq: i + 1 });
+      }
+    }
+
+    if (items.length < existingItems.length) {
+      const idsToDelete = existingItems.slice(items.length).map(e => e.id);
+      await supabase.from('order_items').delete().in('id', idsToDelete);
+    }
+
+    return { error: null };
+  }, []);
+
+  const revertToDraft = useCallback(async (orderId: number) => {
+    const { data, error } = await supabase
+      .from('orders')
+      .update({ status: 'draft', delivery_status: null, delivery_date: null })
+      .eq('id', orderId)
+      .select()
+      .single();
+
+    if (!error) {
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+    }
+    return { data, error };
+  }, []);
+
+  const deleteOrder = useCallback(async (orderId: number) => {
+    const now = new Date().toISOString();
+    const { error: itemErr } = await supabase
+      .from('order_items')
+      .update({ deleted_at: now })
+      .eq('order_id', orderId)
+      .is('deleted_at', null);
+    if (itemErr) return { error: itemErr };
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ deleted_at: now })
+      .eq('id', orderId);
+    if (!error) {
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+    }
+    return { error };
+  }, []);
+
+  return { orders, loading, fetchOrders, fetchOrderItems, createOrder, confirmOrder, confirmOrderWithItems, updateOrder, revertToDraft, deleteOrder };
+}

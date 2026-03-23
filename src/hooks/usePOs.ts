@@ -1,0 +1,191 @@
+import { useState, useCallback } from 'react';
+import { supabase } from '@/lib/supabase';
+import type { POWithDetail, POItem, POLine } from '@/types';
+
+export function usePOs() {
+  const [pos, setPos] = useState<POWithDetail[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchPOs = useCallback(async (filters?: {
+    dateFrom?: string;
+    dateTo?: string;
+    status?: string;
+  }) => {
+    setLoading(true);
+    let query = supabase
+      .from('v_pos_with_detail')
+      .select('*')
+      .order('po_date', { ascending: false });
+
+    if (filters?.dateFrom) query = query.gte('po_date', filters.dateFrom);
+    if (filters?.dateTo) query = query.lte('po_date', filters.dateTo);
+    if (filters?.status) query = query.eq('status', filters.status);
+
+    const { data, error } = await query;
+    if (!error && data) setPos(data);
+    setLoading(false);
+    return { data, error };
+  }, []);
+
+  const fetchPOItems = useCallback(async (poId: number) => {
+    const { data, error } = await supabase
+      .from('po_items')
+      .select('*')
+      .eq('po_id', poId)
+      .is('deleted_at', null)
+      .order('seq', { ascending: true });
+
+    return { data: data as POItem[] | null, error };
+  }, []);
+
+  const createPO = useCallback(async (
+    poData: {
+      po_date: string;
+      partner_id: number;
+      order_id?: number;
+      required_date?: string;
+      payment_terms: string;
+      remark?: string;
+      created_by: number;
+    },
+    items: POLine[],
+  ) => {
+    const { data: po, error: poErr } = await supabase
+      .from('pos')
+      .insert({
+        doc_no: '',
+        po_date: poData.po_date,
+        partner_id: poData.partner_id,
+        order_id: poData.order_id || null,
+        required_date: poData.required_date || null,
+        payment_terms: poData.payment_terms,
+        remark: poData.remark || null,
+        created_by: poData.created_by,
+      })
+      .select()
+      .single();
+
+    if (poErr || !po) return { data: null, error: poErr };
+
+    const itemRows = items.map((item, i) => ({
+      po_id: po.id,
+      order_item_id: item.order_item_id || null,
+      seq: i + 1,
+      name: item.name,
+      spec: item.spec || null,
+      qty: item.qty,
+      unit: item.unit,
+      price: item.price,
+      remark: item.remark || null,
+      received_qty: 0,
+    }));
+
+    const { error: itemErr } = await supabase
+      .from('po_items')
+      .insert(itemRows);
+
+    if (itemErr) return { data: null, error: itemErr };
+
+    return { data: po, error: null };
+  }, []);
+
+  const updateReceivedQty = useCallback(async (poItemId: number, receivedQty: number) => {
+    const { data, error } = await supabase
+      .from('po_items')
+      .update({ received_qty: receivedQty })
+      .eq('id', poItemId)
+      .select()
+      .single();
+
+    return { data, error };
+  }, []);
+
+  const checkOrderHasPO = useCallback(async (orderId: number): Promise<boolean> => {
+    const { count } = await supabase
+      .from('pos')
+      .select('id', { count: 'exact', head: true })
+      .eq('order_id', orderId);
+
+    return (count ?? 0) > 0;
+  }, []);
+
+  const updatePO = useCallback(async (
+    poId: number,
+    poData: {
+      po_date: string;
+      partner_id: number;
+      required_date?: string;
+      payment_terms: string;
+      remark?: string;
+    },
+    items: POLine[],
+  ) => {
+    const { error: updateErr } = await supabase
+      .from('pos')
+      .update({
+        po_date: poData.po_date,
+        partner_id: poData.partner_id,
+        required_date: poData.required_date || null,
+        payment_terms: poData.payment_terms,
+        remark: poData.remark || null,
+      })
+      .eq('id', poId);
+
+    if (updateErr) return { error: updateErr };
+
+    const { data: existing } = await supabase
+      .from('po_items')
+      .select('id, seq')
+      .eq('po_id', poId)
+      .order('seq', { ascending: true });
+
+    const existingItems = existing || [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const row = {
+        name: item.name,
+        spec: item.spec || null,
+        qty: item.qty,
+        unit: item.unit,
+        price: item.price,
+        remark: item.remark || null,
+        order_item_id: item.order_item_id || null,
+      };
+
+      if (i < existingItems.length) {
+        await supabase.from('po_items').update({ ...row, seq: i + 1 }).eq('id', existingItems[i].id);
+      } else {
+        await supabase.from('po_items').insert({ ...row, po_id: poId, seq: i + 1, received_qty: 0 });
+      }
+    }
+
+    if (items.length < existingItems.length) {
+      const idsToDelete = existingItems.slice(items.length).map(e => e.id);
+      await supabase.from('po_items').delete().in('id', idsToDelete);
+    }
+
+    return { error: null };
+  }, []);
+
+  const deletePO = useCallback(async (poId: number) => {
+    const now = new Date().toISOString();
+    const { error: itemErr } = await supabase
+      .from('po_items')
+      .update({ deleted_at: now })
+      .eq('po_id', poId)
+      .is('deleted_at', null);
+    if (itemErr) return { error: itemErr };
+
+    const { error } = await supabase
+      .from('pos')
+      .update({ deleted_at: now })
+      .eq('id', poId);
+    if (!error) {
+      setPos(prev => prev.filter(p => p.id !== poId));
+    }
+    return { error };
+  }, []);
+
+  return { pos, loading, fetchPOs, fetchPOItems, createPO, updatePO, updateReceivedQty, checkOrderHasPO, deletePO };
+}

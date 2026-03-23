@@ -1,0 +1,3 @@
+-- supabase migrations directory
+-- This folder contains database migration files managed by Supabase CLI.
+-- Run `supabase db push` to apply migrations to your project.

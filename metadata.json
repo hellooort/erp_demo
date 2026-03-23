@@ -1,0 +1,5 @@
+{
+  "name": "ERP Demo System",
+  "description": "A demo ERP system featuring Quotation, Purchase Order, Inventory, and Performance management.",
+  "requestFramePermissions": []
+}
