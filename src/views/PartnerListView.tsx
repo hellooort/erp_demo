@@ -178,9 +178,9 @@ export function PartnerListView() {
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        if (!confirm(`"${p.name}" 거래처를 삭제하시겠습니까?\n연결된 견적서/발주서가 있으면 삭제할 수 없습니다.`)) return;
+                        if (!confirm(`"${p.name}" 거래처를 삭제하시겠습니까?`)) return;
                         const { error } = await deletePartner(p.id);
-                        if (error) alert('삭제 실패: 연결된 견적서 또는 발주서가 있어 삭제할 수 없습니다.');
+                        if (error) alert('삭제 실패: ' + (error.message || JSON.stringify(error)));
                       }}
                       className="p-1.5 text-slate-400 hover:text-red-600 transition-colors"
                       title="삭제"

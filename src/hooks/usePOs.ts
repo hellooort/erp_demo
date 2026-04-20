@@ -177,14 +177,18 @@ export function usePOs() {
       .is('deleted_at', null);
     if (itemErr) return { error: itemErr };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('pos')
       .update({ deleted_at: now })
-      .eq('id', poId);
-    if (!error) {
-      setPos(prev => prev.filter(p => p.id !== poId));
+      .eq('id', poId)
+      .is('deleted_at', null)
+      .select('id');
+    if (error) return { error };
+    if (!data || data.length === 0) {
+      return { error: { message: '삭제 권한이 없거나 이미 삭제된 발주서입니다.' } as { message: string } };
     }
-    return { error };
+    setPos(prev => prev.filter(p => p.id !== poId));
+    return { error: null };
   }, []);
 
   return { pos, loading, fetchPOs, fetchPOItems, createPO, updatePO, updateReceivedQty, checkOrderHasPO, deletePO };

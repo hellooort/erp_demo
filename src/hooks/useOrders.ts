@@ -212,14 +212,18 @@ export function useOrders() {
       .is('deleted_at', null);
     if (itemErr) return { error: itemErr };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('orders')
       .update({ deleted_at: now })
-      .eq('id', orderId);
-    if (!error) {
-      setOrders(prev => prev.filter(o => o.id !== orderId));
+      .eq('id', orderId)
+      .is('deleted_at', null)
+      .select('id');
+    if (error) return { error };
+    if (!data || data.length === 0) {
+      return { error: { message: '삭제 권한이 없거나 이미 삭제된 주문서입니다.' } as { message: string } };
     }
-    return { error };
+    setOrders(prev => prev.filter(o => o.id !== orderId));
+    return { error: null };
   }, []);
 
   return { orders, loading, fetchOrders, fetchOrderItems, createOrder, confirmOrder, confirmOrderWithItems, updateOrder, revertToDraft, deleteOrder };

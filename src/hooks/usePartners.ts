@@ -62,14 +62,23 @@ export function usePartners() {
   }, []);
 
   const deletePartner = useCallback(async (id: number) => {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('partners')
       .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id);
-    if (!error) {
-      setPartners(prev => prev.filter(p => p.id !== id));
+      .eq('id', id)
+      .is('deleted_at', null)
+      .select('id');
+
+    if (error) return { error };
+
+    // RLS로 인해 0건이 업데이트되어도 error가 null로 반환되므로
+    // 실제 반영 여부를 별도로 확인한다.
+    if (!data || data.length === 0) {
+      return { error: { message: '삭제 권한이 없거나 이미 삭제된 거래처입니다.' } as { message: string } };
     }
-    return { error };
+
+    setPartners(prev => prev.filter(p => p.id !== id));
+    return { error: null };
   }, []);
 
   return { partners, loading, fetchPartners, createPartner, updatePartner, deletePartner };
